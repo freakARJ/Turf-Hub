@@ -1,0 +1,6 @@
+{
+  "name": "Turf Hub",
+  "description": "Football turf booking platform for iOS and Android with live slot availability, secure online payments, and an admin revenue dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

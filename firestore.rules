@@ -1,0 +1,336 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Hardened Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'arjawad.cse@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isMatchingAtomicBooking(slotData) {
+      let bk = getAfter(/databases/$(database)/documents/bookings/$(slotData.bookingId)).data;
+      return existsAfter(/databases/$(database)/documents/bookings/$(slotData.bookingId))
+        && bk.userId == request.auth.uid
+        && bk.turfId == slotData.turfId
+        && bk.date == slotData.date
+        && (slotData.startHour == bk.startHour || (bk.durationHours == 2 && slotData.startHour == bk.startHour + 1));
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidTurf(data, turfId) {
+      return data.keys().hasAll([
+        'id', 'name', 'neighborhood', 'address', 'lat', 'lng',
+        'format', 'capacity', 'surface', 'pricePerHour', 'openHour', 'closeHour',
+        'openDays', 'amenities', 'imageKey', 'rating', 'isActive', 'createdAt', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'id', 'name', 'neighborhood', 'address', 'lat', 'lng',
+        'format', 'capacity', 'surface', 'pricePerHour', 'openHour', 'closeHour',
+        'openDays', 'amenities', 'imageKey', 'rating', 'isActive', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.id) && data.id == turfId && data.id.size() <= 64
+      && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+      && data.neighborhood is string && data.neighborhood.size() >= 2 && data.neighborhood.size() <= 80
+      && data.address is string && data.address.size() >= 2 && data.address.size() <= 140
+      && data.lat is number && data.lat >= 20.0 && data.lat <= 27.0
+      && data.lng is number && data.lng >= 88.0 && data.lng <= 93.0
+      && data.format is string && data.format in ['5v5', '7v7', '11v11']
+      && data.capacity is int && data.capacity >= 2 && data.capacity <= 40
+      && data.surface is string && data.surface.size() >= 2 && data.surface.size() <= 60
+      && data.pricePerHour is number && data.pricePerHour >= 100 && data.pricePerHour <= 50000
+      && data.openHour is int && data.openHour >= 0 && data.openHour <= 22
+      && data.closeHour is int && data.closeHour > data.openHour && data.closeHour <= 24
+      && data.openDays is list && data.openDays.size() >= 1 && data.openDays.size() <= 7
+      && data.openDays[0] is int
+      && data.amenities is list && data.amenities.size() >= 1 && data.amenities.size() <= 8
+      && data.amenities[0] is string && data.amenities[0].size() <= 60
+      && data.imageKey is string && data.imageKey.size() >= 2 && data.imageKey.size() <= 80
+      && data.rating is number && data.rating >= 0 && data.rating <= 5
+      && data.isActive is bool
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidSlotReservation(data, slotKey) {
+      return data.keys().hasAll([
+        'slotKey', 'turfId', 'date', 'startHour', 'status',
+        'bookingId', 'bookedByUid', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'slotKey', 'turfId', 'date', 'startHour', 'status',
+        'bookingId', 'bookedByUid', 'updatedAt'
+      ])
+      && isValidId(data.slotKey) && data.slotKey == slotKey && data.slotKey.size() <= 100
+      && isValidId(data.turfId) && data.turfId.size() >= 2 && data.turfId.size() <= 64
+      && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+      && data.startHour is int && data.startHour >= 0 && data.startHour <= 23
+      && data.status is string && data.status in ['reserved', 'maintenance', 'released']
+      && isValidId(data.bookingId) && data.bookingId.size() <= 80
+      && isValidId(data.bookedByUid) && data.bookedByUid.size() <= 128
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidBooking(data, bookingId) {
+      return data.keys().hasAll([
+        'id', 'bookingCode', 'slotKey', 'turfId', 'turfName', 'turfFormat',
+        'userId', 'customerName', 'customerEmail', 'customerPhone', 'teamName',
+        'date', 'startHour', 'durationHours', 'basePrice', 'serviceFee',
+        'discountAmount', 'totalAmount', 'paymentMethod', 'paymentReference',
+        'cardLast4', 'paymentStatus', 'status', 'createdAt', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'id', 'bookingCode', 'slotKey', 'turfId', 'turfName', 'turfFormat',
+        'userId', 'customerName', 'customerEmail', 'customerPhone', 'teamName',
+        'date', 'startHour', 'durationHours', 'basePrice', 'serviceFee',
+        'discountAmount', 'totalAmount', 'paymentMethod', 'paymentReference',
+        'cardLast4', 'paymentStatus', 'status', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.id) && data.id == bookingId && data.id.size() >= 4 && data.id.size() <= 80
+      && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 16 && data.bookingCode.matches('^[A-Z0-9\\-]+$')
+      && isValidId(data.slotKey) && data.slotKey.size() >= 8 && data.slotKey.size() <= 100
+      && isValidId(data.turfId) && data.turfId.size() >= 2 && data.turfId.size() <= 64
+      && data.turfName is string && data.turfName.size() >= 2 && data.turfName.size() <= 100
+      && data.turfFormat is string && data.turfFormat in ['5v5', '7v7', '11v11']
+      && isValidId(data.userId) && data.userId.size() <= 128
+      && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80
+      && data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 120
+      && data.customerPhone is string && data.customerPhone.size() >= 5 && data.customerPhone.size() <= 24
+      && data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 60
+      && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+      && data.startHour is int && data.startHour >= 0 && data.startHour <= 23
+      && data.durationHours is int && data.durationHours >= 1 && data.durationHours <= 2
+      && data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 200000
+      && data.serviceFee is number && data.serviceFee >= 0 && data.serviceFee <= 20000
+      && data.discountAmount is number && data.discountAmount >= 0 && data.discountAmount <= 50000
+      && data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 220000
+      && data.paymentMethod is string && data.paymentMethod in ['bkash', 'nagad', 'rocket', 'card']
+      && isValidId(data.paymentReference) && data.paymentReference.size() >= 6 && data.paymentReference.size() <= 64
+      && data.cardLast4 is string && data.cardLast4.size() >= 2 && data.cardLast4.size() <= 8
+      && data.paymentStatus is string && data.paymentStatus in ['paid', 'refunded']
+      && data.status is string && data.status in ['confirmed', 'checked_in', 'cancelled']
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+        'uid', 'displayName', 'email', 'phone', 'photoUrl', 'preferredPosition',
+        'defaultTeamName', 'favoriteTurfIds', 'createdAt', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'uid', 'displayName', 'email', 'phone', 'photoUrl', 'preferredPosition',
+        'defaultTeamName', 'favoriteTurfIds', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.uid) && data.uid == userId && data.uid == request.auth.uid
+      && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+      && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+      && data.phone is string && data.phone.size() <= 24
+      && data.photoUrl is string && data.photoUrl.size() <= 40000
+      && data.preferredPosition is string && data.preferredPosition.size() <= 40
+      && data.defaultTeamName is string && data.defaultTeamName.size() <= 60
+      && data.favoriteTurfIds is list && data.favoriteTurfIds.size() <= 10
+      && (data.favoriteTurfIds.size() == 0 || (data.favoriteTurfIds[0] is string && data.favoriteTurfIds[0].size() <= 64))
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminSubscription(data, adminUid) {
+      return data.keys().hasAll([
+        'uid', 'email', 'planName', 'monthlyPrice', 'trialMonths',
+        'trialStartAt', 'trialEndsAt', 'status', 'billingLast4', 'autoRenew', 'updatedAt'
+      ]) && data.keys().hasOnly([
+        'uid', 'email', 'planName', 'monthlyPrice', 'trialMonths',
+        'trialStartAt', 'trialEndsAt', 'status', 'billingLast4', 'autoRenew', 'updatedAt'
+      ])
+      && isValidId(data.uid) && data.uid == adminUid && data.uid == request.auth.uid
+      && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+      && data.planName is string && data.planName.size() >= 2 && data.planName.size() <= 60
+      && data.monthlyPrice is number && data.monthlyPrice >= 0 && data.monthlyPrice <= 50000
+      && data.trialMonths is int && data.trialMonths == 3
+      && data.trialStartAt is timestamp
+      && data.trialEndsAt is timestamp
+      && data.status is string && data.status in ['trial_active', 'active', 'canceled']
+      && data.billingLast4 is string && data.billingLast4.size() <= 8
+      && data.autoRenew is bool
+      && data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+    match /turfs/{turfId} {
+      allow get: if isValidId(turfId) && (existing().isActive == true || isAdmin());
+      allow list: if resource.data.isActive == true || isBootstrappedAdmin();
+      allow create: if isValidId(turfId)
+        && isAdmin()
+        && isValidTurf(incoming(), turfId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(turfId)
+        && isAdmin()
+        && isValidTurf(incoming(), turfId)
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(turfId) && isAdmin();
+    }
+
+    match /slotReservations/{slotKey} {
+      allow get: if isValidId(slotKey) && (existing().status in ['reserved', 'maintenance', 'released'] || isAdmin());
+      allow list: if resource.data.status in ['reserved', 'maintenance', 'released'] || isBootstrappedAdmin();
+      allow create: if isValidId(slotKey)
+        && isVerifiedUser()
+        && isValidSlotReservation(incoming(), slotKey)
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/turfs/$(incoming().turfId))
+        && (
+          (
+            incoming().status == 'reserved'
+            && incoming().bookedByUid == request.auth.uid
+            && isMatchingAtomicBooking(incoming())
+          )
+          || (isAdmin() && incoming().status == 'maintenance')
+        );
+      allow update: if isValidId(slotKey)
+        && isVerifiedUser()
+        && isValidSlotReservation(incoming(), slotKey)
+        && incoming().slotKey == existing().slotKey
+        && incoming().turfId == existing().turfId
+        && incoming().date == existing().date
+        && incoming().startHour == existing().startHour
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().status == 'released'
+            && incoming().status == 'reserved'
+            && incoming().bookedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'bookingId', 'bookedByUid', 'updatedAt'])
+            && isMatchingAtomicBooking(incoming())
+          )
+          || (
+            existing().bookedByUid == request.auth.uid
+            && existing().status == 'reserved'
+            && incoming().status == 'released'
+            && incoming().bookedByUid == existing().bookedByUid
+            && incoming().bookingId == existing().bookingId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(slotKey) && isAdmin();
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isValidId(bookingId)
+        && isVerifiedUser()
+        && isValidBooking(incoming(), bookingId)
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'confirmed'
+        && incoming().paymentStatus == 'paid'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/turfs/$(incoming().turfId))
+        && get(/databases/$(database)/documents/turfs/$(incoming().turfId)).data.isActive == true
+        && existsAfter(/databases/$(database)/documents/slotReservations/$(incoming().slotKey))
+        && getAfter(/databases/$(database)/documents/slotReservations/$(incoming().slotKey)).data.bookingId == bookingId
+        && getAfter(/databases/$(database)/documents/slotReservations/$(incoming().slotKey)).data.status == 'reserved';
+      allow update: if isValidId(bookingId)
+        && isVerifiedUser()
+        && isValidBooking(incoming(), bookingId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().turfId == existing().turfId
+        && incoming().slotKey == existing().slotKey
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'updatedAt'])
+          )
+          || (
+            existing().userId == request.auth.uid
+            && existing().status == 'confirmed'
+            && incoming().status == 'cancelled'
+            && incoming().paymentStatus == 'refunded'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isValidId(userId)
+        && isVerifiedUser()
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedUser()
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'phone', 'photoUrl', 'preferredPosition',
+          'defaultTeamName', 'favoriteTurfIds', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /adminSubscriptions/{adminUid} {
+      allow get: if isValidId(adminUid) && isAdmin() && request.auth.uid == adminUid;
+      allow list: if false;
+      allow create: if isValidId(adminUid)
+        && isAdmin()
+        && request.auth.uid == adminUid
+        && isValidAdminSubscription(incoming(), adminUid)
+        && incoming().trialStartAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(adminUid)
+        && isAdmin()
+        && request.auth.uid == adminUid
+        && isValidAdminSubscription(incoming(), adminUid)
+        && incoming().uid == existing().uid
+        && incoming().trialStartAt == existing().trialStartAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'billingLast4', 'autoRenew', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && isSignedIn() && (request.auth.uid == adminUid || isAdmin());
+      allow list, write: if false;
+    }
+  }
+}
